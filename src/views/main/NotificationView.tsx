@@ -2,7 +2,6 @@ import React, { useState, useEffect } from 'react';
 import { useAppState } from '../../context/AppState';
 import { getUserNotifications, getProfileViews, Notification, ProfileView, markNotificationAsRead, getUserProfile } from '../../services/firestoreService';
 import { UserProfileView } from '../UserProfileView';
-import { createDummyProfiles, createDummyNotifications } from '../../utils/createDummyProfiles';
 
 export const NotificationView: React.FC = () => {
   const { currentUser, userProfile } = useAppState();
@@ -13,7 +12,6 @@ export const NotificationView: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [selectedUserId, setSelectedUserId] = useState<string | null>(null);
   const [selectedProfileData, setSelectedProfileData] = useState<any>(null);
-  const [creatingDummies, setCreatingDummies] = useState(false);
 
   // Load notifications and profile views
   useEffect(() => {
@@ -41,7 +39,7 @@ export const NotificationView: React.FC = () => {
                 if (profile) {
                   profileMap[profileKey] = profile;
                 } else if (view.viewerProfile) {
-                  // Use snapshot if profile doesn't exist (dummy profile)
+                  // Use snapshot if profile doesn't exist
                   profileMap[profileKey] = view.viewerProfile;
                 }
               } catch (error) {
@@ -67,55 +65,6 @@ export const NotificationView: React.FC = () => {
 
     loadData();
   }, [currentUser]);
-
-  const handleCreateDummyData = async () => {
-    if (!currentUser) return;
-    
-    setCreatingDummies(true);
-    try {
-      await createDummyProfiles(currentUser.uid);
-      await createDummyNotifications(currentUser.uid);
-      
-      // Reload data
-      const userNotifications = await getUserNotifications(currentUser.uid);
-      setNotifications(userNotifications);
-      
-      const views = await getProfileViews(currentUser.uid);
-      setProfileViews(views);
-      
-      // Load viewer profiles
-      const profileMap: Record<string, any> = {};
-      for (const view of views) {
-        const profileKey = view.viewerUserId || view.id || `view_${Date.now()}`;
-        if (!profileMap[profileKey]) {
-          if (view.viewerUserId) {
-            try {
-              const profile = await getUserProfile(view.viewerUserId);
-              if (profile) {
-                profileMap[profileKey] = profile;
-              } else if (view.viewerProfile) {
-                profileMap[profileKey] = view.viewerProfile;
-              }
-            } catch (error) {
-              if (view.viewerProfile) {
-                profileMap[profileKey] = view.viewerProfile;
-              }
-            }
-          } else if (view.viewerProfile) {
-            profileMap[profileKey] = view.viewerProfile;
-          }
-        }
-      }
-      setViewerProfiles(profileMap);
-      
-      alert('Dummy profiles and notifications created! Check the Views tab.');
-    } catch (error) {
-      console.error('Error creating dummy data:', error);
-      alert('Error creating dummy data. Check console for details.');
-    } finally {
-      setCreatingDummies(false);
-    }
-  };
 
   const handleNotificationClick = async (notification: Notification) => {
     if (!notification.read && notification.id) {
@@ -187,20 +136,9 @@ export const NotificationView: React.FC = () => {
     <div className="min-h-screen bg-dark-bg pt-[60px] pb-24 lg:pb-10">
       <div className="max-w-content md:max-w-2xl lg:max-w-4xl xl:max-w-6xl mx-auto px-screen-padding md:px-6 lg:px-8">
         {/* Header */}
-        <div className="flex items-center justify-between mb-5">
-          <h1 className="text-[28px] font-bold text-text-primary">
-            Notifications
-          </h1>
-          {(profileViews.length === 0 || notifications.length === 0) && (
-            <button
-              onClick={handleCreateDummyData}
-              disabled={creatingDummies}
-              className="px-4 py-2 bg-orange/20 text-orange rounded-pill text-sm font-medium hover:opacity-90 transition-opacity disabled:opacity-50"
-            >
-              {creatingDummies ? 'Creating...' : 'Create Dummy Data'}
-            </button>
-          )}
-        </div>
+        <h1 className="text-[28px] font-bold text-text-primary mb-5">
+          Notifications
+        </h1>
 
         {/* Tabs */}
         <div className="flex items-center gap-8 mb-6">
@@ -262,7 +200,6 @@ export const NotificationView: React.FC = () => {
               <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 xl:grid-cols-8 gap-4">
                 {profileViews.map((view, index) => {
                   const viewerProfile = viewerProfiles[view.viewerUserId] || view.viewerProfile;
-                  // For dummy profiles, use the viewerProfile's uid if viewerUserId is not available
                   const profileUserId = view.viewerUserId || (viewerProfile as any)?.uid || view.id;
                   return (
                     <ProfileGridViewItem

@@ -4,7 +4,7 @@ import { getUserProfile } from '../services/firestoreService';
 
 interface UserProfileViewProps {
   userId: string;
-  profileData?: any; // Optional: pass profile data directly (for dummy profiles)
+  profileData?: any; // Optional: pass profile data directly (from profile view snapshots)
   onClose: () => void;
 }
 
@@ -29,15 +29,14 @@ export const UserProfileView: React.FC<UserProfileViewProps> = ({ userId, profil
         if (profile) {
           setUserProfile(profile);
         } else {
-          // If profile doesn't exist (e.g., dummy profile), check if we have snapshot data
-          // This would come from profile views
-          console.warn('Profile not found, may be a dummy profile');
+          // If profile doesn't exist, check if we have snapshot data from profile views
+          console.warn('Profile not found, using snapshot data if available');
         }
         // TODO: Check friend status from Firestore
         // setFriendStatus(await checkFriendStatus(userId));
       } catch (error) {
         console.error('Error loading user profile:', error);
-        // Profile might not exist (dummy profile), continue with empty state
+        // Profile might not exist, continue with empty state
       } finally {
         setLoading(false);
       }
