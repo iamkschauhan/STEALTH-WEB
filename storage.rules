@@ -1,0 +1,187 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    
+    // ===== HELPER FUNCTIONS =====
+    
+    // Check if user is authenticated
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    // Check if user is the owner of the file
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+    
+    // Check if user is admin
+    function isAdmin() {
+      return isAuthenticated() && 
+        exists(/databases/(default)/documents/users/$(request.auth.uid)) &&
+        get(/databases/(default)/documents/users/$(request.auth.uid)).data.role == 'admin';
+    }
+    
+    // Validate file type
+    function isValidFileType() {
+      return request.resource.contentType.matches('image/.*') ||
+        request.resource.contentType.matches('video/.*') ||
+        request.resource.contentType.matches('audio/.*') ||
+        request.resource.contentType.matches('application/pdf') ||
+        request.resource.contentType.matches('text/.*');
+    }
+    
+    // Validate file size
+    function isValidFileSize() {
+      return request.resource.size <= 10 * 1024 * 1024; // 10MB limit
+    }
+    
+    // ===== USER FILES =====
+    
+    match /users/{userId}/files/{fileId} {
+      // Users can read their own files
+      allow read: if isOwner(userId);
+      
+      // Users can create/upload files to their own directory
+      allow create: if isOwner(userId) && 
+        isValidFileType() && 
+        isValidFileSize();
+      
+      // Users can update their own files
+      allow update: if isOwner(userId) && 
+        isValidFileType() && 
+        isValidFileSize();
+      
+      // Users can delete their own files
+      allow delete: if isOwner(userId);
+    }
+    
+    // ===== PROFILE PICTURES =====
+    
+    match /users/{userId}/profile/{fileId} {
+      // Anyone can read profile pictures
+      allow read: if true;
+      
+      // Users can create/upload profile pictures
+      allow create: if isOwner(userId) && 
+        request.resource.contentType.matches('image/.*') &&
+        request.resource.size <= 2 * 1024 * 1024; // 2MB limit for profile pictures
+      
+      // Users can update their profile pictures
+      allow update: if isOwner(userId) && 
+        request.resource.contentType.matches('image/.*') &&
+        request.resource.size <= 2 * 1024 * 1024;
+      
+      // Users can delete their profile pictures
+      allow delete: if isOwner(userId);
+    }
+    
+    // ===== MESSAGE ATTACHMENTS =====
+    
+    match /messages/{messageId}/attachments/{fileId} {
+      // Authenticated users can read message attachments
+      allow read: if isAuthenticated();
+      
+      // Users can create/upload attachments to messages
+      allow create: if isAuthenticated() && 
+        isValidFileType() && 
+        isValidFileSize();
+      
+      // Users can update message attachments
+      allow update: if isAuthenticated() && 
+        isValidFileType() && 
+        isValidFileSize();
+      
+      // Users can delete message attachments
+      allow delete: if isAuthenticated();
+    }
+    
+    // ===== CHAT MEDIA FILES =====
+    // Media files stored per chat - only chat participants can access
+    
+    match /users/{userId}/chats/{chatId}/media/{fileId} {
+      // Helper function to check if user is participant in chat
+      function isChatParticipant() {
+        return isAuthenticated() && 
+          exists(/databases/(default)/documents/chatRooms/$(chatId)) &&
+          (request.auth.uid in get(/databases/(default)/documents/chatRooms/$(chatId)).data.participants);
+      }
+      
+      // Only chat participants can read media files
+      allow read: if isChatParticipant();
+      
+      // Only chat participants can upload media files to their own chat folder
+      allow create: if isChatParticipant() && 
+        isOwner(userId) &&
+        isValidFileType() && 
+        isValidFileSize();
+      
+      // Only chat participants can update media files
+      allow update: if isChatParticipant() && 
+        isOwner(userId) &&
+        isValidFileType() && 
+        isValidFileSize();
+      
+      // Only chat participants can delete media files
+      allow delete: if isChatParticipant() && 
+        isOwner(userId);
+    }
+    
+    // ===== ADMIN FILES =====
+    
+    match /admin/{allPaths=**} {
+      // Only admins can access admin files
+      allow read, write: if isAdmin();
+    }
+    
+    // ===== SYSTEM FILES =====
+    
+    match /system/{allPaths=**} {
+      // Only admins can access system files
+      allow read, write: if isAdmin();
+    }
+    
+    // ===== PUBLIC FILES =====
+    
+    match /public/{allPaths=**} {
+      // Anyone can read public files
+      allow read: if true;
+      
+      // Only admins can upload public files
+      allow write: if isAdmin();
+    }
+    
+    // ===== POST MEDIA FILES =====
+    
+    match /posts/{postId}/media/{fileId} {
+      // Authenticated users can read post media
+      allow read: if isAuthenticated();
+      
+      // Users can create/upload media for their own posts
+      allow create: if isAuthenticated() && 
+        isValidFileType() && 
+        isValidFileSize();
+      
+      // Users can update media for their own posts
+      allow update: if isAuthenticated() && 
+        isValidFileType() && 
+        isValidFileSize();
+      
+      // Users can delete media for their own posts
+      allow delete: if isAuthenticated();
+    }
+    
+    // ===== TEMPORARY FILES =====
+    
+    match /temp/{allPaths=**} {
+      // Only authenticated users can access temp files
+      allow read, write: if isAuthenticated();
+    }
+    
+    // ===== DEFAULT DENY =====
+    
+    // Deny all other access
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

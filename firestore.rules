@@ -1,0 +1,661 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // ===== HELPER FUNCTIONS =====
+    
+    // Check if user is authenticated
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    // Allow list queries on users collection (for search)
+    match /users {
+      allow list: if isAuthenticated();
+    }
+    
+    // Check if user is the owner of the document
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+    
+    // Check if user is admin
+    function isAdmin() {
+      return isAuthenticated() && 
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+    }
+    
+    // Check if user is CEO
+    function isCEO() {
+      return isAuthenticated() && 
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'ceo';
+    }
+    
+    // Check if user is in conversation
+    function isInConversation(conversationId) {
+      return isAuthenticated() && 
+        exists(/databases/$(database)/documents/conversations/$(conversationId)) &&
+        (request.auth.uid in get(/databases/$(database)/documents/conversations/$(conversationId)).data.participants);
+    }
+    
+    // Validate message content
+    function isValidMessage(message) {
+      return message is string && 
+        message.size() > 0 && 
+        message.size() <= 5000;
+    }
+    
+    // Validate user data
+    function isValidUserData(data) {
+      return data.keys().hasAll(['email', 'uid']) &&
+        data.email is string &&
+        data.uid is string &&
+        data.uid == request.auth.uid;
+    }
+    
+    // ===== USER COLLECTION =====
+    
+    match /users/{userId} {
+      // Users can read their own data and public data of others
+      // This allows both individual document reads and collection queries
+      allow read: if isAuthenticated();
+      
+      // Users can create their own account
+      allow create: if isAuthenticated() && 
+        request.auth.uid == userId &&
+        request.resource.data.uid == request.auth.uid;
+      
+      // Users can update their own account
+      allow update: if isAuthenticated() && 
+        request.auth.uid == userId;
+      
+      // Users can delete their own account, admins can delete any
+      allow delete: if isAuthenticated() && 
+        (request.auth.uid == userId || isAdmin());
+    }
+    
+    // ===== CONVERSATIONS COLLECTION =====
+    
+    match /conversations/{conversationId} {
+      // Participants can read conversations
+      allow read: if isAuthenticated() && 
+        request.auth.uid in resource.data.participants;
+      
+      // Users can create conversations they're part of
+      allow create: if isAuthenticated() && 
+        request.auth.uid in request.resource.data.participants &&
+        request.resource.data.participants is list &&
+        request.resource.data.participants.size() >= 2 &&
+        request.resource.data.participants.size() <= 10;
+      
+      // Participants can update conversations
+      allow update: if isAuthenticated() && 
+        request.auth.uid in resource.data.participants;
+      
+      // Participants can delete conversations
+      allow delete: if isAuthenticated() && 
+        request.auth.uid in resource.data.participants;
+    }
+    
+    // ===== MESSAGES COLLECTION =====
+    
+    match /messages/{messageId} {
+      // Participants in the conversation can read messages
+      allow read: if isAuthenticated() && 
+        exists(/databases/$(database)/documents/conversations/$(resource.data.conversationId)) &&
+        request.auth.uid in get(/databases/$(database)/documents/conversations/$(resource.data.conversationId)).data.participants;
+      
+      // Users can create messages in conversations they're part of
+      allow create: if isAuthenticated() && 
+        request.auth.uid == request.resource.data.senderId &&
+        isValidMessage(request.resource.data.content) &&
+        exists(/databases/$(database)/documents/conversations/$(request.resource.data.conversationId)) &&
+        request.auth.uid in get(/databases/$(database)/documents/conversations/$(request.resource.data.conversationId)).data.participants;
+      
+      // Users can update their own messages
+      allow update: if isAuthenticated() && 
+        request.auth.uid == resource.data.senderId &&
+        isValidMessage(request.resource.data.content);
+      
+      // Users can delete their own messages
+      allow delete: if isAuthenticated() && 
+        request.auth.uid == resource.data.senderId;
+    }
+    
+    // ===== FILES COLLECTION =====
+    
+    match /files/{fileId} {
+      // Users can read their own files and shared files
+      allow read: if isAuthenticated() && 
+        (request.auth.uid == resource.data.ownerId ||
+         (resource.data.sharedWith != null && request.auth.uid in resource.data.sharedWith));
+      
+      // Users can create/upload files they own
+      allow create: if isAuthenticated() && 
+        request.auth.uid == request.resource.data.ownerId &&
+        request.resource.data.size is number &&
+        request.resource.data.size <= 10 * 1024 * 1024; // 10MB limit
+      
+      // Users can update their own files
+      allow update: if isAuthenticated() && 
+        request.auth.uid == resource.data.ownerId;
+      
+      // Users can delete their own files
+      allow delete: if isAuthenticated() && 
+        request.auth.uid == resource.data.ownerId;
+    }
+    
+    // ===== NOTIFICATIONS COLLECTION =====
+    
+    match /notifications/{notificationId} {
+      // Users can only read their own notifications
+      allow read: if isAuthenticated() && 
+        request.auth.uid == resource.data.userId;
+      
+      // System can create notifications
+      allow create: if isAuthenticated() && 
+        request.auth.uid == request.resource.data.userId;
+      
+      // Users can update their own notifications
+      allow update: if isAuthenticated() && 
+        request.auth.uid == resource.data.userId;
+      
+      // Users can delete their own notifications
+      allow delete: if isAuthenticated() && 
+        request.auth.uid == resource.data.userId;
+    }
+    
+    // ===== PROFILE VIEWS COLLECTION =====
+    
+    match /profileViews/{viewId} {
+      // Users can read views of their own profile
+      allow read: if isAuthenticated() && 
+        request.auth.uid == resource.data.viewedUserId;
+      
+      // Users can create views when viewing someone's profile
+      allow create: if isAuthenticated() && 
+        request.auth.uid == request.resource.data.viewerUserId;
+      
+      // No updates or deletes needed for profile views
+      allow update: if false;
+      allow delete: if false;
+    }
+    
+    // ===== FRIEND REQUESTS COLLECTION =====
+    
+    // Allow list queries on friendRequests collection
+    match /friendRequests {
+      allow list: if isAuthenticated();
+    }
+    
+    match /friendRequests/{requestId} {
+      // Users can read friend requests they sent or received
+      allow read: if isAuthenticated() && 
+        (request.auth.uid == resource.data.senderId || 
+         request.auth.uid == resource.data.receiverId ||
+         request.auth.uid == resource.data.fromUserId ||
+         request.auth.uid == resource.data.toUserId);
+      
+      // Users can create friend requests
+      allow create: if isAuthenticated() && 
+        (request.auth.uid == request.resource.data.senderId ||
+         request.auth.uid == request.resource.data.fromUserId) &&
+        request.resource.data.senderId != request.resource.data.receiverId;
+      
+      // Users can update friend requests they received
+      allow update: if isAuthenticated() && 
+        (request.auth.uid == resource.data.receiverId ||
+         request.auth.uid == resource.data.toUserId);
+      
+      // Users can delete friend requests they sent or received
+      allow delete: if isAuthenticated() && 
+        (request.auth.uid == resource.data.senderId || 
+         request.auth.uid == resource.data.receiverId ||
+         request.auth.uid == resource.data.fromUserId ||
+         request.auth.uid == resource.data.toUserId);
+    }
+    
+    // ===== FRIENDS COLLECTION =====
+    
+    // Allow list queries on friends collection
+    match /friends {
+      allow list: if isAuthenticated();
+    }
+    
+    match /friends/{friendshipId} {
+      // Users can read friendships they're part of
+      allow read: if isAuthenticated() && 
+        (request.auth.uid == resource.data.user1Id ||
+         request.auth.uid == resource.data.user2Id ||
+         request.auth.uid == resource.data.userId ||
+         request.auth.uid == resource.data.friendId);
+      
+      // Users can create friendships
+      allow create: if isAuthenticated();
+      
+      // Users can update friendships they're part of
+      allow update: if isAuthenticated() && 
+        (request.auth.uid == resource.data.user1Id ||
+         request.auth.uid == resource.data.user2Id ||
+         request.auth.uid == resource.data.userId ||
+         request.auth.uid == resource.data.friendId);
+      
+      // Users can delete friendships they're part of
+      allow delete: if isAuthenticated() && 
+        (request.auth.uid == resource.data.user1Id ||
+         request.auth.uid == resource.data.user2Id ||
+         request.auth.uid == resource.data.userId ||
+         request.auth.uid == resource.data.friendId);
+    }
+    
+    // ===== USER BLOCKS COLLECTION =====
+    
+    // Allow list queries on userBlocks collection
+    match /userBlocks {
+      allow list: if isAuthenticated();
+    }
+    
+    match /userBlocks/{blockId} {
+      // Users can read blocks they created or are blocked by
+      allow read: if isAuthenticated() && 
+        (request.auth.uid == resource.data.blockerId ||
+         request.auth.uid == resource.data.blockedId ||
+         request.auth.uid == resource.data.blockedUserId);
+      
+      // Users can create blocks
+      allow create: if isAuthenticated() && 
+        (request.auth.uid == request.resource.data.blockerId ||
+         request.auth.uid == request.resource.data.blockedUserId);
+      
+      // Users can update blocks they created
+      allow update: if isAuthenticated() && 
+        (request.auth.uid == resource.data.blockerId ||
+         request.auth.uid == resource.data.blockedUserId);
+      
+      // Users can delete blocks they created
+      allow delete: if isAuthenticated() && 
+        (request.auth.uid == resource.data.blockerId ||
+         request.auth.uid == resource.data.blockedUserId);
+    }
+    
+    // ===== ADMIN COLLECTIONS =====
+    
+    match /admin/{document=**} {
+      // Only admins can access admin collections
+      allow read, write: if isAdmin();
+    }
+    
+    // ===== CEO COLLECTIONS =====
+    
+    match /ceo/{document=**} {
+      // Only CEO can access CEO collections
+      allow read, write: if isCEO();
+    }
+    
+    // ===== SYSTEM COLLECTIONS =====
+    
+    match /system/{document=**} {
+      // Only authenticated users can read system data
+      allow read: if isAuthenticated();
+      
+      // Only admins can write system data
+      allow write: if isAdmin();
+    }
+    
+    // ===== ANALYTICS COLLECTION =====
+    
+    match /analytics/{document=**} {
+      // Only admins can access analytics
+      allow read, write: if isAdmin();
+    }
+    
+    // ===== LOGS COLLECTION =====
+    
+    match /logs/{document=**} {
+      // Only admins can access logs
+      allow read, write: if isAdmin();
+    }
+    
+    // ===== SETTINGS COLLECTION =====
+    
+    match /settings/{settingId} {
+      // All authenticated users can read settings
+      allow read: if isAuthenticated();
+      
+      // Only admins can update settings
+      allow write: if isAdmin();
+    }
+    
+    // ===== CHAT ROOMS COLLECTION =====
+    
+    // Allow list queries on chatRooms collection
+    match /chatRooms {
+      allow list: if isAuthenticated();
+    }
+    
+    match /chatRooms/{chatId} {
+      // Only participants can read chat rooms
+      allow read: if isAuthenticated() && 
+        (request.auth.uid in resource.data.participants ||
+         !('participants' in resource.data));
+      
+      // Users can create chat rooms they're part of
+      allow create: if isAuthenticated() && 
+        request.auth.uid in request.resource.data.participants &&
+        request.resource.data.participants is list &&
+        request.resource.data.participants.size() >= 2;
+      
+      // Only participants can update chat rooms
+      allow update: if isAuthenticated() && 
+        (request.auth.uid in resource.data.participants ||
+         !('participants' in resource.data));
+      
+      // Participants can delete chat rooms they're part of
+      allow delete: if isAuthenticated() && 
+        (request.auth.uid in resource.data.participants ||
+         !('participants' in resource.data));
+    }
+    
+    // ===== CHATS COLLECTION (for messages) =====
+    
+    match /chats/{chatId} {
+      // Only participants can read chat metadata
+      allow read: if isAuthenticated() && 
+        exists(/databases/$(database)/documents/chatRooms/$(chatId)) &&
+        request.auth.uid in get(/databases/$(database)/documents/chatRooms/$(chatId)).data.participants;
+      
+      // Users can create chats they're part of
+      allow create: if isAuthenticated() && 
+        exists(/databases/$(database)/documents/chatRooms/$(chatId)) &&
+        request.auth.uid in get(/databases/$(database)/documents/chatRooms/$(chatId)).data.participants;
+      
+      // Participants can update chats
+      allow update: if isAuthenticated() && 
+        exists(/databases/$(database)/documents/chatRooms/$(chatId)) &&
+        request.auth.uid in get(/databases/$(database)/documents/chatRooms/$(chatId)).data.participants;
+      
+      // Participants can delete chats they're part of
+      allow delete: if isAuthenticated() && 
+        exists(/databases/$(database)/documents/chatRooms/$(chatId)) &&
+        request.auth.uid in get(/databases/$(database)/documents/chatRooms/$(chatId)).data.participants;
+      
+      // ===== MESSAGES SUBCOLLECTION =====
+      
+      match /messages/{messageId} {
+        // Only chat participants can read messages
+        allow read: if isAuthenticated() && 
+          exists(/databases/$(database)/documents/chatRooms/$(chatId)) &&
+          request.auth.uid in get(/databases/$(database)/documents/chatRooms/$(chatId)).data.participants;
+        
+        // Users can only send messages to chats they're part of
+        allow create: if isAuthenticated() && 
+          request.auth.uid == request.resource.data.senderId &&
+          exists(/databases/$(database)/documents/chatRooms/$(chatId)) &&
+          request.auth.uid in get(/databases/$(database)/documents/chatRooms/$(chatId)).data.participants;
+        
+        // Users can only update their own messages
+        allow update: if isAuthenticated() && 
+          request.auth.uid == resource.data.senderId &&
+          exists(/databases/$(database)/documents/chatRooms/$(chatId)) &&
+          request.auth.uid in get(/databases/$(database)/documents/chatRooms/$(chatId)).data.participants;
+        
+        // Users can delete their own messages, participants can delete messages in their chats
+        allow delete: if isAuthenticated() && 
+          (request.auth.uid == resource.data.senderId ||
+           (exists(/databases/$(database)/documents/chatRooms/$(chatId)) &&
+            request.auth.uid in get(/databases/$(database)/documents/chatRooms/$(chatId)).data.participants));
+      }
+    }
+    
+    // ===== POSTS COLLECTION (Social Media) =====
+    
+    match /posts/{postId} {
+      // Authenticated users can read posts
+      allow read: if isAuthenticated();
+      
+      // Users can create/share their own posts
+      allow create: if isAuthenticated() && 
+        request.auth.uid == request.resource.data.authorId;
+      
+      // Users can update their own posts
+      allow update: if isAuthenticated() && 
+        request.auth.uid == resource.data.authorId;
+      
+      // Users can delete their own posts, admins can delete any
+      allow delete: if isAuthenticated() && 
+        (request.auth.uid == resource.data.authorId || isAdmin());
+    }
+    
+    // ===== GROUPS COLLECTION (Social Media) =====
+    
+    match /groups/{groupId} {
+      // Members can read group data
+      allow read: if isAuthenticated() && 
+        (resource.data.isPublic == true || 
+         request.auth.uid in resource.data.members);
+      
+      // Users can create groups
+      allow create: if isAuthenticated() && 
+        request.auth.uid == request.resource.data.createdBy;
+      
+      // Admins and moderators can update groups
+      allow update: if isAuthenticated() && 
+        (request.auth.uid == resource.data.createdBy ||
+         request.auth.uid in resource.data.admins ||
+         request.auth.uid in resource.data.moderators ||
+         isAdmin());
+      
+      // Only creators and admins can delete groups
+      allow delete: if isAuthenticated() && 
+        (request.auth.uid == resource.data.createdBy || isAdmin());
+    }
+    
+    // ===== DATING PROFILES COLLECTION =====
+    
+    match /datingProfiles/{profileId} {
+      // Users can read their own profile, others' profiles for discovery
+      allow read: if isAuthenticated();
+      
+      // Users can create their own profile
+      allow create: if isAuthenticated() && 
+        request.auth.uid == request.resource.data.userId;
+      
+      // Users can update their own profile, admins can update any
+      allow update: if isAuthenticated() && 
+        (request.auth.uid == resource.data.userId || isAdmin());
+      
+      // Users can delete their own profile, admins can delete any
+      allow delete: if isAuthenticated() && 
+        (request.auth.uid == resource.data.userId || isAdmin());
+    }
+    
+    // ===== SWIPES COLLECTION =====
+    
+    match /swipes/{swipeId} {
+      // Users can read their own swipes
+      allow read: if isAuthenticated() && 
+        (request.auth.uid == resource.data.swiperId || 
+         request.auth.uid == resource.data.swipedUserId);
+      
+      // Users can create swipes they initiated
+      allow create: if isAuthenticated() && 
+        request.auth.uid == request.resource.data.swiperId;
+      
+      // Only system can update swipes (for match creation)
+      allow update: if isAdmin();
+      
+      // Users can delete their own swipes
+      allow delete: if isAuthenticated() && 
+        request.auth.uid == resource.data.swiperId;
+    }
+    
+    // ===== MATCHES COLLECTION =====
+    
+    match /matches/{matchId} {
+      // Users can read matches they're part of
+      allow read: if isAuthenticated() && 
+        (request.auth.uid == resource.data.user1Id || 
+         request.auth.uid == resource.data.user2Id);
+      
+      // Only system can create matches
+      allow create: if isAdmin();
+      
+      // Users can update their own matches (unmatch)
+      allow update: if isAuthenticated() && 
+        (request.auth.uid == resource.data.user1Id || 
+         request.auth.uid == resource.data.user2Id);
+      
+      // Users can delete their own matches
+      allow delete: if isAuthenticated() && 
+        (request.auth.uid == resource.data.user1Id || 
+         request.auth.uid == resource.data.user2Id);
+    }
+    
+    // ===== SUBSCRIPTIONS COLLECTION =====
+    
+    match /subscriptions/{subscriptionId} {
+      // Users can read their own subscriptions
+      allow read: if isAuthenticated() && 
+        request.auth.uid == resource.data.userId;
+      
+      // Users can create their own subscriptions
+      allow create: if isAuthenticated() && 
+        request.auth.uid == request.resource.data.userId;
+      
+      // Users can update their own subscriptions, admins can update any
+      allow update: if isAuthenticated() && 
+        (request.auth.uid == resource.data.userId || isAdmin());
+      
+      // Users can delete their own subscriptions
+      allow delete: if isAuthenticated() && 
+        request.auth.uid == resource.data.userId;
+    }
+    
+    // ===== LIKES QUEUE COLLECTION =====
+    
+    match /likesQueue/{likeId} {
+      // Users can read likes they received
+      allow read: if isAuthenticated() && 
+        request.auth.uid == resource.data.likedUserId;
+      
+      // System can create likes
+      allow create: if isAuthenticated();
+      
+      // Users can update likes they received (mark as viewed)
+      allow update: if isAuthenticated() && 
+        request.auth.uid == resource.data.likedUserId;
+      
+      // System can delete likes
+      allow delete: if isAdmin();
+    }
+    
+    // ===== BUSINESS PROFILES COLLECTION =====
+    
+    match /businessProfiles/{businessId} {
+      // Authenticated users can read business profiles
+      allow read: if isAuthenticated();
+      
+      // Users can create their own business profile
+      allow create: if isAuthenticated() && 
+        request.auth.uid == request.resource.data.userId;
+      
+      // Users can update their own business profile, admins can update any
+      allow update: if isAuthenticated() && 
+        (request.auth.uid == resource.data.userId || isAdmin());
+      
+      // Users can delete their own business profile, admins can delete any
+      allow delete: if isAuthenticated() && 
+        (request.auth.uid == resource.data.userId || isAdmin());
+    }
+    
+    // ===== BUSINESS ADS COLLECTION =====
+    
+    match /businessAds/{adId} {
+      // Authenticated users can read active ads
+      allow read: if isAuthenticated();
+      
+      // Business owners can create ads
+      allow create: if isAuthenticated();
+      
+      // Business owners can update their own ads, admins can update any
+      allow update: if isAuthenticated() && 
+        (request.auth.uid == resource.data.postedBy || isAdmin());
+      
+      // Business owners can delete their own ads, admins can delete any
+      allow delete: if isAuthenticated() && 
+        (request.auth.uid == resource.data.postedBy || isAdmin());
+    }
+    
+    // ===== AD REVIEWS COLLECTION =====
+    
+    match /adReviews/{reviewId} {
+      // Authenticated users can read reviews
+      allow read: if isAuthenticated();
+      
+      // Users can create reviews
+      allow create: if isAuthenticated() && 
+        request.auth.uid == request.resource.data.userId;
+      
+      // Users can update their own reviews, admins can update any
+      allow update: if isAuthenticated() && 
+        (request.auth.uid == resource.data.userId || isAdmin());
+      
+      // Users can delete their own reviews, admins can delete any
+      allow delete: if isAuthenticated() && 
+        (request.auth.uid == resource.data.userId || isAdmin());
+    }
+    
+    // ===== AD FAVORITES COLLECTION =====
+    
+    match /adFavorites/{favoriteId} {
+      // Users can read their own favorites
+      allow read: if isAuthenticated() && 
+        request.auth.uid == resource.data.userId;
+      
+      // Users can create their own favorites
+      allow create: if isAuthenticated() && 
+        request.auth.uid == request.resource.data.userId;
+      
+      // Users can delete their own favorites
+      allow delete: if isAuthenticated() && 
+        request.auth.uid == resource.data.userId;
+    }
+    
+    // ===== REPORTS COLLECTION =====
+    
+    match /reports/{reportId} {
+      // Users can read their own reports
+      allow read: if isAuthenticated() && 
+        request.auth.uid == resource.data.reporterId;
+      
+      // Admins can read all reports
+      allow read: if isAdmin();
+      
+      // Users can create reports
+      allow create: if isAuthenticated() && 
+        request.auth.uid == request.resource.data.reporterId;
+      
+      // Only admins can update reports
+      allow update: if isAdmin();
+      
+      // Only admins can delete reports
+      allow delete: if isAdmin();
+    }
+    
+    // ===== ADMIN LOGS COLLECTION =====
+    
+    match /adminLogs/{logId} {
+      // Only admins can access admin logs
+      allow read, write: if isAdmin();
+    }
+    
+    // ===== DEFAULT DENY =====
+    
+    // Deny all other access
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
